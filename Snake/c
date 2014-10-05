@@ -1,0 +1,77 @@
+#!/bin/sh
+LIBDIRS="/usr/local/lib /usr/pkg/lib /usr/X11R6/lib /usr/lib /sw/lib"
+
+if [ "$1" = "-g" ]; then
+	shift
+	cflag="-g $CFLAGS"
+else
+	cflag="$CFLAGS"
+	for i in $LIBDIRS; do
+		[ -d "$i" ] && d=$(dirname "$i") && cflag="$cflag -I${d}/include"
+	done
+fi
+
+for i in "$@"; do
+	rn=$(rootname "$i")
+	dn=$(dirname "$i")
+	[ -z "$dn" ] && dn='.'
+
+	lf="${dn}/${rn}.libs"
+
+	if [ -f "$lf" ]; then
+		echo "Scanning libs in $lf"
+		libs=''
+		libp=''
+		incp=''
+		for j in $(cat "$lf"); do
+			libo="lib${j}.so"
+			liba="lib${j}.a"
+			libd=''
+			for k in $LIBDIRS; do
+				[ -f "${k}/${liba}" -o -f "${k}/${libo}" ] && libd="$k"
+			done
+			if [ -z "$libd" ]; then
+				echo "*** Can't find library: $j"
+			else
+				libs="$libs -l${j}"
+				for k in $libp; do
+					[ "$k" = "-L${libd}" ] && libd=''
+				done
+				[ -n "$libd" ] && libp="$libp -L${libd}"
+
+				incd=$(dirname "$libd")/include
+
+				for k in $incp; do
+					[ "$k" = "-I${incd}" ] && incd=''
+				done
+				[ -n "$incd" ] && incp="$incp -I${incd}"
+			fi
+		done
+		echo "Making $rn with$libs in$libp"
+	else
+		echo "Making $rn with std libs"
+	fi
+
+	cc=g++
+	ext=$(ridx "$i" .)
+
+	# Add missing extension?
+	if [ -z "$ext" -o "$i" = "$ext" ]; then for j in c cp cpp c++ cc; do
+		[ -f "${dn}/${rn}.$j" ] && ext="$j" && i="$i.$j"
+		[ -f "${dn}/${rn}$j" ] && ext="$j" && i="$i$j"
+	done; fi
+
+	[ "$ext" = "c" ] && cc=gcc
+
+	if [ -z "$libs" ]; then
+		echo "Compiling: $cc $cflag $libs $libp -o $rn $i"
+		$cc $cflag $libs $libp -o "$rn" "$i"
+	else
+		mkdir -p ".$rn"
+		# echo "Compile: libtool --mode=compile --tag CC $cc $cflag $incp -c \"$i\" -o \".$rn/$rn.o\""
+		libtool --mode=compile --tag CC $cc $cflag $incp -c "$i" -o ".$rn/$rn.o"
+		# echo "Link: libtool --mode=link $cc $cflag -o \"$rn\" $libs $libp \".$rn/$rn.o\""
+		libtool --mode=link --tag LD $cc $cflag -o "$rn" $libs $libp ".$rn/$rn.o"
+		rm -r ".$rn"
+	fi
+done
