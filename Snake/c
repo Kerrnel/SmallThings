@@ -1,5 +1,5 @@
 #!/bin/sh
-LIBDIRS="/usr/local/lib /usr/pkg/lib /usr/X11R6/lib /usr/lib /sw/lib"
+LIBDIRS="/usr/local/lib /usr/pkg/lib /usr/X11R6/lib /usr/lib /sw/lib /usr/lib/x86_64-linux-gnu"
 
 if [ "$1" = "-g" ]; then
 	shift
