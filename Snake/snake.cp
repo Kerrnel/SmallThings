@@ -26,11 +26,12 @@ using namespace std;
 //
 // History
 //	Ver	Who	When	What
+//	003	GLK	141006	Fix boundaries (was one off on the walls), update status bar with Length & Speed
 //	002	GLK	141005	Animate apple
 //	001	GLK	141004	Fix Apple landing on snake then being erased by snake move
 //
 ///////////////////////////////////////////////////////////////////////////////
-#define		VERSION		0x00020000
+#define		VERSION		0x00030000
 #define		BUILDDATE	0x20141004
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -57,9 +58,15 @@ enum SpriteNum	// Offsets into the Sprite string for text mode
 
 enum SizesOfThings
  {
-	MessageSize = 100,		// Largest stored message
+	MessageSize = 200,		// Largest stored message
 	TickleSpeed = 24676,	// Microseconds of sleep between loops
-	AnimationSpeed = 5		// Smaller is faster
+	MessageTime = 3456,		// Milliseconds a message is displayed instead of score line
+	AnimationSpeed = 5,		// Smaller is faster
+	InitialSpeed = 222,		// Smaller is faster - increases with every snack by 20%
+	InitialLength = 4,		// Initial snake length - grows 40% with every snack
+	SpeedPercent = 10,		// Increase speed by this percent per snack
+	LengthPercent = 30,		// Growth of snake per snack
+	PenaltyPercent = 10		// Growth of snake per penalty (on slowdown)
  };
 
 
@@ -136,25 +143,24 @@ class Points			// A list of points (one point and a pointer to the next one or N
 class Portal
  {
   private:
-	Point		d;							// Dimensions of the window (for text version in text columns & rows)
-	WINDOW *	window;						// For this text version - this is an ncurses window
-	char *		msg;						// pending message to display and delete at next opportunity
-	bool		msgDirty;					// Have we displayed a message and it's dirty?
+	Point		d;								// Dimensions of the window (for text version in text columns & rows)
+	WINDOW *	window;							// For this text version - this is an ncurses window
+	char *		msg;							// pending message to display and delete at next opportunity
+	bool		msgDirty;						// Have we displayed a message and it's dirty?
 
   public:
-	Portal();								// Create the window (or clear the screen)
-	~Portal();								// Close the window (or say good bye)
+	Portal();									// Create the window (or clear the screen)
+	~Portal();									// Close the window (or say good bye)
 
-	int			H() { return d.y; }			// Height
-	int			W() { return d.x; }			// Width
+	int			H() { return d.y; }				// Height
+	int			W() { return d.x; }				// Width
 
-	void		Clear();					// Clear it
-	int			GetKey();					// Key press
-	void		Update();					// Put the offscreen work on screen
-	void		Frame();					// Frame the window or a box
-	void		Frame(const char * title,
-					const char * cmd,
-					const char * score);		// Frame the window or a box with strings
+	void		Clear();						// Clear it
+	void		Clear(int x, int y, int cnt);	// Clear a field
+	int			GetKey();						// Key press
+	void		Update();						// Put the offscreen work on screen
+	void		Frame();						// Frame the window or a box
+	void		Frame(const char * title);		// Frame the window or a box with strings
 	void		Frame(Rect * r);				// Frame a box
 	void		Sprite(int, int, SpriteNum);	// Put a sprite at a location
 	void		Text(const char * s,
@@ -193,7 +199,7 @@ class Snake
 	bool		Suicide();						// Hit ourselves?
 	bool		Collide(Point p, bool skip);	// Does p hit the snake?
 	void		Start(Portal *p,
-					Rect * box);				// Initialize the snake... place it somewhere and associate the portal so it can draw itself
+					const Rect * box);			// Initialize the snake... place it somewhere and associate the portal so it can draw itself
 	bool		Move(time_t t,
 					const Rect * bounds);		// Returns true if the move caused death
 	void		Control(int x, int y);			// Request direction (-1 or 1 in each parameter)
@@ -201,6 +207,7 @@ class Snake
 	Point		Loc()	{ return head->P(); }
 	int			X() 	{ return head->X(); }	// Location of snake
 	int			Y()		{ return head->Y(); }
+	int			Speed()	{ return InitialSpeed - delay; }	// To display speed to user
  };
 
 
@@ -223,6 +230,8 @@ class Game
 	bool		dead;					// Snake dead
 	bool		quit;
 
+	char *		line;					// One line of text to show in message area - size is window width + 1
+
 	void	Clear();					// Clear portal and add frame
 	void	Help();						// Instructions front & center
 	void	AddApple();					// Place them on the board
@@ -234,6 +243,7 @@ class Game
 
 	void	Start();					// Start things going
 	void	Title();					// Draw our title screen
+	void	Scores();					// Draw our status bar
 	void	Task();						// Do whatever is next
 	void	Idle();						// Update our idle time and don't eat all the CPU
 	void	Finish();					// Game over notice
@@ -305,6 +315,7 @@ Portal::~Portal()
  {
 	if (window)
 	 {
+		Msg("Goodbye.");
 		window = NULL;
 		endwin();
 		// cout << "W: " << W() << ", H: " << H() << endl;
@@ -315,6 +326,9 @@ Portal::~Portal()
 		delete msg;
 		msg = 0;
 	 }
+
+	// Nothing to clean up?
+	puts("\n\n\tThank you for spending some quality time with the Snake!\n\n\t(c)2014 Akua, Inc. Version 1.0\n");
  }
 
 
@@ -337,6 +351,20 @@ void Portal::Clear()
  }
 
 
+void Portal::Clear(int x, int y, int cnt)
+ {
+	if (x < 0)		x += W();
+	if (y < 0)		y += H();
+	if (cnt < 0)	cnt += W() - x;		// From x to (right - cnt) character
+
+	if (!cnt)
+		cnt = W() - x;
+
+	if (cnt > 0)
+		mvhline(y, x, ' ', cnt);
+ }
+
+
 void Portal::Sprite(int x, int y, SpriteNum n)
  {
 	// Draw on ncurses
@@ -344,18 +372,17 @@ void Portal::Sprite(int x, int y, SpriteNum n)
  }
 
 
-void Portal::Frame(const char * title, const char * cmd, const char * score)
+void Portal::Frame(const char * title)
  {
 	box(window, 0, 0);
 	mvhline(2, 2, 0, W() - 4);
 	mvhline(H() - 3, 2, 0, W() - 4);
 	Text(title, 1, Center);
-	Text(cmd, -2, Left);
-	Text(score, -2, Right);
  }
 
 
-void Portal::Text(const char * s, int line, Justification j)
+
+void Portal::Text(const char * s, int line, Justification j = Left)
  {
 	int	x;
 
@@ -382,23 +409,10 @@ void Portal::Text(const char * s, int line, Justification j)
 //
 void Portal::Msg(const char * m)
  {
-	int	n = strlen(m);
-	int w = W();
-
-	// Leave space for score and isntructions
-	const int saveSpc = 60;
-
-	if (w > saveSpc) if (n < (w - saveSpc))
-	 {
-		// Clear area
-		char * clrs = new char[w - saveSpc];
-		memset(clrs, ' ', w - saveSpc);
-		clrs[w - saveSpc] = 0;
-		Text(clrs, -2, Center);
-		delete clrs;
-	 }
-
 	// Write text
+	if (W() - strlen(m) < 80)			// Space for Instructions & Score at left & right of this line?
+		Clear(1, -2, -1);
+
 	Text(m, -2, Center);
 
 	// Mark as dirty area if we wrote something
@@ -408,7 +422,7 @@ void Portal::Msg(const char * m)
 
 void Portal::Dbg(const char * msg)
  {
-	Text(msg, 1, Left);
+	Text(msg, 1);
  }
 
 
@@ -471,7 +485,7 @@ bool Snake::Move(time_t t, const Rect * bounds)
 		p.y += dY;
 
 		// Constrain it by the box
-		if (p.x < bounds->L() || p.x >= bounds->R() || p.y < bounds->T() || p.y >= bounds->B())
+		if (p.x < bounds->L() || p.x > bounds->R() || p.y < bounds->T() || p.y > bounds->B())
 			dead = true;
 
 		// Paste in the new head
@@ -510,13 +524,14 @@ void Snake::Control(int x, int y)
 	 {
 		// portal->Msg("Can't go further that way.");
 		portal->Msg("Power boost!");
-		delay -= (delay / 20);						// 20% speedup for free
+		delay -= (delay / (100 / SpeedPercent));	// 10% speedup for free
 	 }
 	else if (x == dX || y == dY)					// Can't go backwards ... although we could slow down by increasing 'delay'
 	 {
 		// portal->Msg("Can't walk over yourself");
 		portal->Msg("Stepped in doggy doo!");
-		delay += (delay / 20);						// 20% slowdown for free
+		delay += (delay / (100 / SpeedPercent));						// 10% slowdown for free
+		adder += Length() / (100 / PenaltyPercent);
 	 }
 	else
 	 {
@@ -527,7 +542,7 @@ void Snake::Control(int x, int y)
  }
 
 
-void Snake::Start(Portal * port, Rect * box)
+void Snake::Start(Portal * port, const Rect * box)
  {
 	portal = port;
 	cage = *box;
@@ -550,8 +565,8 @@ void Snake::Start(Portal * port, Rect * box)
 	 }
 
 	// Start with a half second between moves?
-	delay = 222;		// Initial delay between snake moves in milliseconds
-	adder = 4;			// Initial length of snake
+	delay = InitialSpeed;			// Initial delay between snake moves in milliseconds
+	adder = InitialLength;			// Initial length of snake
 
 	head = new Points(x + cage.L(), y + cage.T());
  }
@@ -565,8 +580,8 @@ bool Snake::Eaten(Point apple)
 		if (X() == apple.x && Y() == apple.y)
 		 {
 			// Increase length by 50% and speed up snake by 20%
-			adder += Length() / 2;
-			delay -= (delay / 20);
+			adder += Length() / (100 / LengthPercent);
+			delay -= (delay / (100 / SpeedPercent));
 			return true;
 		 }
 	 }
@@ -606,19 +621,37 @@ Game::Game()
 	msgTime = 0;
 
 	// Shrink area away from frame
-	box.tl.x = 2;
-	box.tl.y = 4;
+	box.tl.x = 1;
+	box.tl.y = 3;
 	box.br.x = portal.W() - 2;
 	box.br.y = portal.H() - 4;
 
 	// Seed random numbers with ticker
 	Idle();
 	srandom(timer.MS());
+
+	// One line buffer
+	if ((line = new char[portal.W() + 1]))
+	 {
+	 	const char *	cmdS = "Commands: N, asdw, Q, <v^>";
+		static int		cmdN = strlen(cmdS);
+
+		memset(line, ' ', portal.W());
+
+		// Make sure strings fit ... "line" will be offset by 2 at left  when displayed - so zero is where it should be
+		if (portal.W() > cmdN)
+			strncpy(line, cmdS, cmdN);
+	 }
  }
 
 
 Game::~Game()
  {
+	if (line)
+	 {
+		delete line;
+		line = 0;
+	 }
  }
 
 
@@ -660,10 +693,9 @@ void Game::Idle()
 			msgTime = timer.MS();;
 			// portal.Dbg("Stamp");
 		 }
-		else if ((timer.MS() - msgTime) > 3456)	// Something written and time is up ... clear it after 3.456 seconds
+		else if ((timer.MS() - msgTime) > MessageTime)	// Something written and time is up ... clear it after 3.456 seconds
 		 {
-			// portal.Dbg("Clearing");
-			portal.Msg("");
+			Scores();		// Put scores back into message box
 			msgTime = 0;
 		 }
 	 }
@@ -730,11 +762,34 @@ void Game::Title()
  }
 
 
+void Game::Scores()
+ {
+
+ 	const char * staS = "  Length: %4d  .  Speed: %3d  . ";
+ 	const char * scrS = "Score: %5d";
+
+	static int staN = strlen(staS) + 2;		// %4d takes up one less spot than the 4 spaces, include \0 at the end as well
+	static int scrN = strlen(scrS) + 3;		// %5d takes up one less spot than the 5 digits
+
+	if (portal.W() > scrN)
+		snprintf(line + portal.W() - scrN - 3, scrN, scrS, score);
+
+	if (!Dead() && (portal.W() > (1 + scrN + staN)))
+	 {
+		snprintf(line + portal.W() - scrN - staN - 3, staN, staS, snake.Length(), snake.Speed());
+		line[portal.W() - scrN - 4] = ' ';
+	 }
+
+	portal.Text(line, portal.H() - 2);
+ }
+
+
 void Game::Clear()
  {
  	// Automatic border
  	portal.Clear();
- 	portal.Frame((char *)"Welcome to Keanu Snake", (char *)"Commands: N, asdw, Q, <v^>", (char *)"Score: 0000");
+ 	portal.Frame((char *)"Welcome to the game of Snape");
+ 	Scores();
  }
 
 
@@ -764,10 +819,8 @@ void Game::Task()
 		// Update score?
 		if (scored != score)
 		 {
-			char	scores[32];
-			sprintf(scores, "Score: %04d", score = scored);
-			portal.Text(scores, -2, Right);
 			portal.Msg("Congratulations!");
+			score = scored;
 		 }
 	 }
 
@@ -792,7 +845,7 @@ void Game::Task()
 	  case -1:	  break;
 
 	  default:
-		sprintf(portal.Msg(), "Unknown Key: %d", (int)c);
+		snprintf(portal.Msg(), MessageSize, "Unknown Key: %d", (int)c);
 	  break;
 	 }
 
@@ -811,8 +864,6 @@ int main(int argc, char * argv[], char * env[])
 
 		delete myGame;
 	 }
-
-	puts("\n\n\tThank you for spending some quality time with the Snake!\n\n\t(c)2014 Akua, Inc. Version 1.0\n");
 
 	return 0;
  }
